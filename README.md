@@ -51,82 +51,50 @@ This document outlines the detailed architecture for migrating the fast-rag-app 
 
 ## Data Model Design
 
-### Azure AI Search Index Schema
+### Azure AI Search Index Schema (Unified Document Chunks with Embedded Graph Information)
 ```json
 {
   "name": "unified-rag-index",
   "fields": [
-    // Common fields
+    // Core document fields
     {"name": "id", "type": "Edm.String", "key": true},
     {"name": "content", "type": "Edm.String", "searchable": true},
     {"name": "content_vector", "type": "Collection(Edm.Single)", "searchable": true, "dimensions": 3072},
-    {"name": "document_type", "type": "Edm.String", "filterable": true}, // "chunk", "entity", "relationship"
     
     // Multi-tenancy fields
     {"name": "clientId", "type": "Edm.String", "filterable": true},
     {"name": "projectId", "type": "Edm.String", "filterable": true},
     {"name": "workspaceId", "type": "Edm.String", "filterable": true},
     
-    // Document chunk fields
+    // Document metadata
     {"name": "source", "type": "Edm.String", "filterable": true},
-    {"name": "chunk_metadata", "type": "Edm.String"},
+    {"name": "metadata", "type": "Edm.String"},
     
-    // Graph entity fields
-    {"name": "entity_id", "type": "Edm.String", "filterable": true},
-    {"name": "entity_type", "type": "Edm.String", "filterable": true},
-    {"name": "entity_description", "type": "Edm.String", "searchable": true},
-    
-    // Graph relationship fields
-    {"name": "source_entity", "type": "Edm.String", "filterable": true},
-    {"name": "target_entity", "type": "Edm.String", "filterable": true},
-    {"name": "relationship_type", "type": "Edm.String", "filterable": true},
-    {"name": "relationship_properties", "type": "Edm.String"}
+    // Graph information embedded in chunks
+    {"name": "entities", "type": "Edm.String", "searchable": true}, // JSON string of entities in this chunk
+    {"name": "relationships", "type": "Edm.String", "searchable": true}, // JSON string of relationships in this chunk
+    {"name": "entity_types", "type": "Edm.String", "filterable": true}, // Comma-separated entity types for filtering
+    {"name": "relationship_types", "type": "Edm.String", "filterable": true} // Comma-separated relationship types for filtering
   ]
 }
 ```
 
-### Document Types in Azure AI Search
+### Unified Document Chunks with Embedded Graph Information
 
-#### 1. Document Chunks
+#### Document Chunk with Embedded Graph Data
 ```json
 {
   "id": "chunk_client123_doc1_0",
-  "content": "This is a text chunk from the document...",
+  "content": "John Doe is a software engineer at TechCorp. He has been working there since 2019 and specializes in backend development.",
   "content_vector": [0.1, 0.2, ...],
-  "document_type": "chunk",
   "clientId": "client-123",
   "projectId": "project-456",
   "source": "document.pdf",
-  "chunk_metadata": "{\"page\": 1, \"section\": \"introduction\"}"
-}
-```
-
-#### 2. Graph Entities
-```json
-{
-  "id": "entity_client123_person_john_doe",
-  "content": "John Doe is a software engineer at TechCorp...",
-  "content_vector": [0.3, 0.4, ...],
-  "document_type": "entity",
-  "clientId": "client-123",
-  "entity_id": "john_doe",
-  "entity_type": "Person",
-  "entity_description": "Software engineer at TechCorp with 5 years experience"
-}
-```
-
-#### 3. Graph Relationships
-```json
-{
-  "id": "rel_client123_john_doe_works_at_techcorp",
-  "content": "John Doe works at TechCorp as a software engineer",
-  "content_vector": [0.5, 0.6, ...],
-  "document_type": "relationship",
-  "clientId": "client-123",
-  "source_entity": "john_doe",
-  "target_entity": "techcorp",
-  "relationship_type": "WORKS_AT",
-  "relationship_properties": "{\"role\": \"software_engineer\", \"since\": \"2019\"}"
+  "metadata": "{\"page\": 1, \"section\": \"team_overview\"}",
+  "entities": "[{\"id\": \"john_doe\", \"type\": \"Person\", \"description\": \"Software engineer at TechCorp\"}, {\"id\": \"techcorp\", \"type\": \"Company\", \"description\": \"Technology company\"}]",
+  "relationships": "[{\"source\": \"john_doe\", \"target\": \"techcorp\", \"type\": \"WORKS_AT\", \"properties\": {\"role\": \"software_engineer\", \"since\": \"2019\"}}]",
+  "entity_types": "Person,Company",
+  "relationship_types": "WORKS_AT"
 }
 ```
 
