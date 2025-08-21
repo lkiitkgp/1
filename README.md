@@ -98,78 +98,106 @@ This document outlines the detailed architecture for migrating the fast-rag-app 
 }
 ```
 
-## GraphRAG Implementation Strategy
+## GraphRAG Implementation Strategy (Unified Approach)
 
-### 1. Entity Extraction and Storage
+### 1. Entity and Relationship Extraction with Document Chunks
 ```python
-# During ingestion, extract entities and relationships
-def extract_graph_from_document(document_content, user_data):
-    # Use LLM to extract entities
-    entities = llm_extract_entities(document_content)
-    relationships = llm_extract_relationships(document_content, entities)
+# During ingestion, extract entities and relationships and embed them with chunks
+def extract_graph_from_document_chunks(chunks, user_data):
+    """
+    Extract entities and relationships from each chunk and store them together.
+    This creates a unified storage where each chunk contains its graph information.
+    """
+    chunks_with_graph_info = []
     
-    # Store entities in Azure AI Search
-    for entity in entities:
-        entity_doc = {
-            "id": f"entity_{user_data['client_id']}_{entity['id']}",
-            "content": entity['description'],
-            "document_type": "entity",
-            "entity_id": entity['id'],
-            "entity_type": entity['type'],
-            "entity_description": entity['description'],
-            **user_data  # clientId, projectId, workspaceId
+    for chunk_text in chunks:
+        # Use LLM to extract entities and relationships from this specific chunk
+        entities = llm_extract_entities(chunk_text)
+        relationships = llm_extract_relationships(chunk_text, entities)
+        
+        # Create graph information for this chunk
+        graph_info = {
+            "entities": entities,  # List of entities found in this chunk
+            "relationships": relationships  # List of relationships found in this chunk
         }
-        azure_search.add_documents([entity_doc])
+        
+        chunks_with_graph_info.append({
+            "text": chunk_text,
+            "graph_info": graph_info
+        })
     
-    # Store relationships in Azure AI Search
-    for rel in relationships:
-        rel_doc = {
-            "id": f"rel_{user_data['client_id']}_{rel['source']}_{rel['type']}_{rel['target']}",
-            "content": f"{rel['source']} {rel['type']} {rel['target']}",
-            "document_type": "relationship",
-            "source_entity": rel['source'],
-            "target_entity": rel['target'],
-            "relationship_type": rel['type'],
-            **user_data
-        }
-        azure_search.add_documents([rel_doc])
+    return chunks_with_graph_info
 ```
 
-### 2. GraphRAG Query Process
+### 2. GraphRAG Query Process (Chunk-Based Traversal)
 ```python
-# GraphRAG query implementation
+# GraphRAG query implementation using chunk traversal
 def graphrag_query(query: str, user_data: Dict[str, Any]) -> str:
-    # Step 1: Find relevant entities using vector search
-    relevant_entities = azure_search.search(
+    # Step 1: Find relevant chunks using vector search
+    relevant_chunks = azure_search.search_documents(
         query=query,
-        filter=f"document_type eq 'entity' and clientId eq '{user_data['client_id']}'",
-        top=10
+        user_data=user_data,
+        top_k=10
     )
     
-    # Step 2: Find relationships for relevant entities
-    entity_ids = [entity['entity_id'] for entity in relevant_entities]
-    relationships = []
-    for entity_id in entity_ids:
-        rels = azure_search.search(
-            filter=f"document_type eq 'relationship' and (source_entity eq '{entity_id}' or target_entity eq '{entity_id}') and clientId eq '{user_data['client_id']}'",
-            top=20
-        )
-        relationships.extend(rels)
+    # Step 2: Extract entities from relevant chunks
+    all_entities = []
+    for chunk in relevant_chunks:
+        entities = json.loads(chunk.get("entities", "[]"))
+        all_entities.extend(entities)
     
-    # Step 3: Build context from entities and relationships
-    context = build_graph_context(relevant_entities, relationships)
+    # Step 3: Find additional chunks that contain related entities
+    entity_ids = [entity["id"] for entity in all_entities]
+    related_chunks = azure_search.get_related_chunks(
+        entity_ids=entity_ids,
+        user_data=user_data,
+        top_k=20
+    )
     
-    # Step 4: Use LLM to answer query based on graph context
+    # Step 4: Combine all chunks and build comprehensive context
+    all_chunks = relevant_chunks + related_chunks
+    
+    # Step 5: Build graph context from all chunks
+    context = build_graph_context_from_chunks(all_chunks)
+    
+    # Step 6: Use LLM to answer query based on graph context
     answer = llm.invoke(f"""
-    Based on the following graph information, answer the query: {query}
+    Based on the following information from document chunks and their embedded graph data, answer the query: {query}
     
-    Entities: {format_entities(relevant_entities)}
-    Relationships: {format_relationships(relationships)}
+    Context: {context}
     
     Answer:
     """)
     
     return answer
+
+def build_graph_context_from_chunks(chunks):
+    """
+    Build a comprehensive graph context from chunks with embedded graph information.
+    """
+    all_entities = []
+    all_relationships = []
+    chunk_contents = []
+    
+    for chunk in chunks:
+        chunk_contents.append(chunk["content"])
+        
+        # Parse entities and relationships from this chunk
+        entities = json.loads(chunk.get("entities", "[]"))
+        relationships = json.loads(chunk.get("relationships", "[]"))
+        
+        all_entities.extend(entities)
+        all_relationships.extend(relationships)
+    
+    # Deduplicate entities and relationships
+    unique_entities = {entity["id"]: entity for entity in all_entities}.values()
+    unique_relationships = list({f"{rel['source']}_{rel['type']}_{rel['target']}": rel for rel in all_relationships}.values())
+    
+    return {
+        "chunks": chunk_contents,
+        "entities": list(unique_entities),
+        "relationships": unique_relationships
+    }
 ```
 
 ## Implementation Plan
@@ -250,17 +278,25 @@ class Settings(BaseSettings):
    - All queries go to Azure AI Search
    - Disable Neo4j fallback
 
-## Benefits of This Architecture
+## Benefits of This Unified Architecture
 
 1. **Simplified Infrastructure**
-   - Single Azure AI Search service instead of Neo4j
+   - Single Azure AI Search service for both vector and graph operations
+   - No separate graph database required
    - Reduced operational complexity
    - Better Azure ecosystem integration
 
-2. **Enhanced Search Capabilities**
-   - Unified vector and graph search
+2. **Unified Data Model**
+   - Document chunks contain both content and graph information
+   - Consistent multi-tenancy across vector and graph search
+   - Simplified data ingestion and management
+   - Single source of truth for all data
+
+3. **Enhanced Search Capabilities**
+   - Seamless transition between vector and graph search
+   - Graph traversal through chunk relationships
    - Better semantic search with Azure AI
-   - Advanced filtering and faceting
+   - Advanced filtering and faceting on both content and graph data
 
 3. **Improved Scalability**
    - Azure AI Search auto-scaling
